@@ -26,6 +26,7 @@ import (
 
 	"github.com/ca110us/kelp/core"
 	"github.com/ca110us/kelp/mux"
+	"github.com/ca110us/kelp/proxy"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -155,23 +156,8 @@ func (s *server) handle(raw net.Conn) {
 		if err != nil {
 			return
 		}
-		go serveStream(st)
+		go proxy.ServeStream(st)
 	}
-}
-
-func serveStream(st *mux.Stream) {
-	defer st.Close()
-	out, err := net.DialTimeout("tcp", st.Target(), 10*time.Second)
-	if err != nil {
-		log.Printf("dial %s: %v", st.Target(), err)
-		return
-	}
-	defer out.Close()
-	log.Printf("stream -> %s", st.Target())
-	done := make(chan struct{}, 2)
-	go func() { io.Copy(out, st); done <- struct{}{} }()
-	go func() { io.Copy(st, out); done <- struct{}{} }()
-	<-done
 }
 
 var decoyClient = &http.Client{
