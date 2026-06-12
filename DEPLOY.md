@@ -107,6 +107,33 @@ System-wide on macOS: System Settings → Network → your interface → Details
 Proxies → SOCKS, host `127.0.0.1`, port `1080`. In browsers, set a SOCKS5 proxy
 with "remote DNS" enabled.
 
+## 2b. Global TUN proxy (all apps, TCP + UDP)
+
+For a true system-wide tunnel (every app, including UDP/DNS) without per-app
+proxy settings, use `kelp-tun`. It runs the Kelp client internally plus a
+userspace TUN (tun2socks) and routes everything through it.
+
+```sh
+sudo ./kelp-tun \
+  -server tunnel.example.com:443 \
+  -psk 'YOUR_SHARED_SECRET' \
+  -pubkey 'VmW7...' \
+  -domain tunnel.example.com
+```
+
+It needs **root** (creates a `utun` device and edits the routing table). It:
+- pins a host route for the server IP to your real gateway (so the tunnel's own
+  connection doesn't loop), and
+- installs a split default route (`0/1` + `128/1`) through the tun.
+
+On Ctrl-C / SIGTERM it removes those routes. If it is killed uncleanly, restore
+networking with: `sudo route delete -net 0.0.0.0/1; sudo route delete -net 128.0.0.0/1`
+(or just toggle Wi-Fi off/on).
+
+> The route manipulation has not been exercised in CI — review it for your
+> setup and test on a machine you can recover. A clean menu-bar-app integration
+> needs a macOS NetworkExtension (paid Apple Developer account + entitlements).
+
 ## 3. Optional: realistic traffic shaping
 
 Learn a real CDN's TLS record distribution and load it on BOTH ends with
