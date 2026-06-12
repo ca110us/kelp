@@ -25,7 +25,8 @@ func main() {
 	pskStr := flag.String("psk", "", "shared secret (required, same as server)")
 	pubKey := flag.String("pubkey", "", "server static pubkey base64 (from server log)")
 	pubFile := flag.String("pubfile", "", "file with the server static pubkey (alternative to -pubkey)")
-	sni := flag.String("sni", "cdn.example.com", "TLS SNI to send (must match server -sni)")
+	domain := flag.String("domain", "", "server's real domain — verifies its Let's Encrypt cert (recommended)")
+	sni := flag.String("sni", "cdn.example.com", "TLS SNI for a self-signed server (when -domain is empty)")
 	modelFile := flag.String("model", "", "measured shaping model JSON (optional)")
 	flag.Parse()
 	if *server == "" || *pskStr == "" {
@@ -56,11 +57,18 @@ func main() {
 		log.Fatalf("bad server pubkey")
 	}
 
+	tlsName := *sni
+	insecure := true
+	if *domain != "" {
+		tlsName = *domain // real cert: verify normally against system roots
+		insecure = false
+	}
 	mgr := &carrier{
 		server:    *server,
 		psk:       core.PSKFromString(*pskStr),
 		serverPub: serverPub,
-		sni:       *sni,
+		sni:       tlsName,
+		insecure:  insecure,
 	}
 
 	ln, err := net.Listen("tcp", *listen)
@@ -86,6 +94,7 @@ type carrier struct {
 	psk       []byte
 	serverPub []byte
 	sni       string
+	insecure  bool
 
 	mu  sync.Mutex
 	mux *mux.Mux
@@ -114,7 +123,7 @@ func (c *carrier) dial() (*mux.Mux, error) {
 		return nil, err
 	}
 	conn, err := tls.Dial("tcp", c.server, &tls.Config{
-		InsecureSkipVerify: true, // self-signed front; Kelp auth is the real check
+		InsecureSkipVerify: c.insecure, // false when a real -domain cert is used
 		ServerName:         c.sni,
 		NextProtos:         []string{"http/1.1"},
 	})

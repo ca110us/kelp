@@ -26,13 +26,16 @@ import (
 
 	"github.com/ca110us/kelp/internal/core"
 	"github.com/ca110us/kelp/internal/mux"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 func main() {
 	addr := flag.String("listen", "0.0.0.0:443", "TLS listen address")
 	pskStr := flag.String("psk", "", "shared secret (required); use a long random string")
 	keyFile := flag.String("key", "kelp_server.key", "file to persist the server static keypair")
-	sni := flag.String("sni", "cdn.example.com", "TLS cert CN / SNI to present")
+	domain := flag.String("domain", "", "real domain for an automatic Let's Encrypt cert (recommended)")
+	certDir := flag.String("certdir", "kelp-certs", "ACME certificate cache directory")
+	sni := flag.String("sni", "cdn.example.com", "self-signed cert CN (only when -domain is empty)")
 	decoy := flag.String("decoy", "https://example.com", "decoy origin for non-Kelp traffic")
 	modelFile := flag.String("model", "", "measured shaping model JSON (optional)")
 	flag.Parse()
@@ -61,13 +64,27 @@ func main() {
 	psk := core.PSKFromString(*pskStr)
 	replay := core.NewReplayCache()
 
-	cert, err := selfSignedCert(*sni)
-	if err != nil {
-		log.Fatalf("cert: %v", err)
-	}
-	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{"http/1.1"}, // probers speak HTTP/1.1 → decoy
+	var tlsCfg *tls.Config
+	if *domain != "" {
+		// Real, browser-trusted cert via Let's Encrypt (TLS-ALPN-01); the TLS
+		// handshake becomes indistinguishable from a normal HTTPS site. Must be
+		// reachable on :443 from the internet for issuance.
+		m := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(*domain),
+			Cache:      autocert.DirCache(*certDir),
+		}
+		tlsCfg = m.TLSConfig()
+		tlsCfg.NextProtos = append([]string{"http/1.1"}, tlsCfg.NextProtos...) // keep acme-tls/1
+	} else {
+		cert, err := selfSignedCert(*sni)
+		if err != nil {
+			log.Fatalf("cert: %v", err)
+		}
+		tlsCfg = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			NextProtos:   []string{"http/1.1"},
+		}
 	}
 
 	ln, err := net.Listen("tcp", *addr)
@@ -76,8 +93,13 @@ func main() {
 	}
 	log.Printf("kelp-server listening on %s", *addr)
 	log.Printf("server static pubkey: %s", pubB64)
-	log.Printf("client: kelp-client -server <this-host>:%s -psk <same-psk> -pubkey %s -sni %s",
-		portOf(*addr), pubB64, *sni)
+	if *domain != "" {
+		log.Printf("client: kelp-client -server %s:%s -psk <same-psk> -pubkey %s -domain %s",
+			*domain, portOf(*addr), pubB64, *domain)
+	} else {
+		log.Printf("client: kelp-client -server <this-host>:%s -psk <same-psk> -pubkey %s -sni %s",
+			portOf(*addr), pubB64, *sni)
+	}
 
 	s := &server{psk: psk, priv: priv, replay: replay, decoy: decoyURL, tlsCfg: tlsCfg}
 	for {
@@ -103,6 +125,10 @@ func (s *server) handle(raw net.Conn) {
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
 	if err := conn.Handshake(); err != nil {
 		conn.Close()
+		return
+	}
+	if conn.ConnectionState().NegotiatedProtocol == "acme-tls/1" {
+		conn.Close() // Let's Encrypt TLS-ALPN-01 challenge, handled by autocert
 		return
 	}
 

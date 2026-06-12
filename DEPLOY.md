@@ -14,26 +14,45 @@ openssl rand -base64 24      # e.g. 9Xf2...  — keep it secret
 ## 1. Server (on the VPS, Linux)
 
 Copy the right binary to the VPS (`scp dist/kelp-server-linux-amd64 user@vps:`),
-then run it. Port 443 makes it look like normal HTTPS but needs privilege:
+then run it. Port 443 makes it look like normal HTTPS but needs privilege.
+
+### Recommended: a real domain + automatic Let's Encrypt cert
+
+Point a domain you control at the VPS (an `A` record), then pass `-domain`. The
+server obtains and renews a real, browser-trusted cert automatically (TLS-ALPN-01
+over :443), so the **TLS handshake is indistinguishable from a normal HTTPS
+site** — no self-signed fingerprint, no `InsecureSkipVerify` on the client.
 
 ```sh
-# allow binding 443 without root (once):
 sudo setcap 'cap_net_bind_service=+ep' ./kelp-server-linux-amd64
 
 ./kelp-server-linux-amd64 \
   -listen 0.0.0.0:443 \
+  -domain tunnel.example.com \
+  -certdir /etc/kelp/certs \
   -psk 'YOUR_SHARED_SECRET' \
   -key /etc/kelp/server.key \
-  -sni www.cloudflare.com \
   -decoy https://www.cloudflare.com
 ```
 
-On start it prints the static **pubkey** and a ready-to-paste client command:
+The domain must resolve to this VPS and :443 must be reachable from the internet
+when the cert is first issued. On start it prints the pubkey and client command:
 
 ```
 server static pubkey: VmW7vrXDPUvZSk0rxJPMJBYhAtAMbI28IOvVldVceBw=
-client: kelp-client -server <this-host>:443 -psk <same-psk> -pubkey VmW7... -sni www.cloudflare.com
+client: kelp-client -server tunnel.example.com:443 -psk <same-psk> -pubkey VmW7... -domain tunnel.example.com
 ```
+
+### Quick test without a domain (self-signed)
+
+```sh
+./kelp-server-linux-amd64 -listen 0.0.0.0:443 -psk 'YOUR_SHARED_SECRET' \
+  -key /etc/kelp/server.key -sni www.cloudflare.com -decoy https://www.cloudflare.com
+```
+
+The client must then pass `-sni www.cloudflare.com` (and trusts the self-signed
+cert; fine for testing, but the self-signed cert is a fingerprint — prefer
+`-domain` for real use).
 
 The keypair is persisted to `-key`, so the pubkey stays the same across
 restarts (the client never needs reconfiguring).
@@ -65,16 +84,18 @@ sudo systemctl enable --now kelp
 
 ## 2. Client (your machine)
 
-Use the pubkey and SNI from the server's startup log:
+Use the pubkey from the server's startup log. With a real domain (recommended):
 
 ```sh
 ./kelp-client-darwin-arm64 \
-  -server YOUR_VPS_IP:443 \
+  -server tunnel.example.com:443 \
   -psk 'YOUR_SHARED_SECRET' \
   -pubkey 'VmW7vrXDPUvZSk0rxJPMJBYhAtAMbI28IOvVldVceBw=' \
-  -sni www.cloudflare.com \
+  -domain tunnel.example.com \
   -listen 127.0.0.1:1080
 ```
+
+(For a self-signed server, drop `-domain` and pass `-sni <same-as-server>` instead.)
 
 This exposes a local **SOCKS5** proxy on `127.0.0.1:1080`. Point apps at it:
 
@@ -98,13 +119,17 @@ Learn a real CDN's TLS record distribution and load it on BOTH ends with
 
 ## Notes & limits
 
-- The outer TLS cert is self-signed; the client uses `InsecureSkipVerify`. The
-  real authentication is the Kelp PSK + X25519, so this is safe for the tunnel,
-  but the self-signed cert is a fingerprint. A production front would use a real
-  cert or borrow a real handshake (REALITY-style) — see `DESIGN.md`.
-- The `-sni` you pick is sent in cleartext in the TLS ClientHello; choose a
-  plausible domain (and ideally one your VPS could believably host).
-- A direct browser/probe to the server gets the `-decoy` site, so the server
-  looks like a benign reverse proxy.
-- Carrier is raw TLS (the H2/H3 "looks like real HTTP" carriers are future
-  work). Provides circumvention, not anonymity.
+- **Cert fingerprint — solved with `-domain`.** With a real domain the TLS
+  handshake (SNI + a valid Let's Encrypt cert) is indistinguishable from a
+  normal HTTPS site. Without `-domain` the self-signed cert is a fingerprint;
+  only use that for testing.
+- **TLS-in-TLS — handled by shaping.** The carrier is raw TLS, but the shaping
+  engine re-chunks the encrypted record-size sequence to match a measured CDN
+  distribution and smears the inner handshake, which is what TLS-in-TLS
+  detectors key on. Use `-model` on both ends for the best match. (A
+  structural "ride real H2/H3" carrier is an alternative in `DESIGN.md`, not a
+  prerequisite for the defense.)
+- A direct browser/probe to the server gets the `-decoy` site, so it looks like
+  a benign reverse proxy. Point `-decoy` at a site that plausibly matches your
+  domain.
+- Provides circumvention, **not anonymity** — use Tor for that.
