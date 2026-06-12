@@ -2,8 +2,10 @@
 /kelp-server
 /kelp-client
 /kelp-measure
+/dist/
 
-# Measured models and local state
+# Keys and measured models (local state — never commit)
+*.key
 *.model.json
 model.json
 

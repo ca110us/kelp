@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/ca110us/kelp/internal/core"
@@ -20,11 +21,16 @@ import (
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:1080", "local SOCKS5 listen address")
-	server := flag.String("server", "127.0.0.1:8443", "kelp-server address")
-	pskStr := flag.String("psk", "dev", "shared PSK passphrase (MVP)")
-	pubFile := flag.String("pubfile", "/tmp/kelp_server.pub", "file with the server static pubkey (base64)")
+	server := flag.String("server", "", "kelp-server address host:port (required)")
+	pskStr := flag.String("psk", "", "shared secret (required, same as server)")
+	pubKey := flag.String("pubkey", "", "server static pubkey base64 (from server log)")
+	pubFile := flag.String("pubfile", "", "file with the server static pubkey (alternative to -pubkey)")
+	sni := flag.String("sni", "cdn.example.com", "TLS SNI to send (must match server -sni)")
 	modelFile := flag.String("model", "", "measured shaping model JSON (optional)")
 	flag.Parse()
+	if *server == "" || *pskStr == "" {
+		log.Fatalf("-server and -psk are required")
+	}
 	if *modelFile != "" {
 		m, err := core.LoadModel(*modelFile)
 		if err != nil {
@@ -34,19 +40,27 @@ func main() {
 		log.Printf("loaded shaping model %s (sizes %v)", *modelFile, m.Sizes)
 	}
 
-	pubB64, err := os.ReadFile(*pubFile)
-	if err != nil {
-		log.Fatalf("read pubfile: %v", err)
+	pkB64 := *pubKey
+	if pkB64 == "" {
+		if *pubFile == "" {
+			log.Fatalf("provide the server pubkey via -pubkey or -pubfile")
+		}
+		data, err := os.ReadFile(*pubFile)
+		if err != nil {
+			log.Fatalf("read pubfile: %v", err)
+		}
+		pkB64 = strings.TrimSpace(string(data))
 	}
-	serverPub, err := base64.StdEncoding.DecodeString(string(pubB64))
-	if err != nil {
-		log.Fatalf("decode pubkey: %v", err)
+	serverPub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pkB64))
+	if err != nil || len(serverPub) != 32 {
+		log.Fatalf("bad server pubkey")
 	}
 
 	mgr := &carrier{
 		server:    *server,
 		psk:       core.PSKFromString(*pskStr),
 		serverPub: serverPub,
+		sni:       *sni,
 	}
 
 	ln, err := net.Listen("tcp", *listen)
@@ -71,6 +85,7 @@ type carrier struct {
 	server    string
 	psk       []byte
 	serverPub []byte
+	sni       string
 
 	mu  sync.Mutex
 	mux *mux.Mux
@@ -99,8 +114,8 @@ func (c *carrier) dial() (*mux.Mux, error) {
 		return nil, err
 	}
 	conn, err := tls.Dial("tcp", c.server, &tls.Config{
-		InsecureSkipVerify: true, // MVP: self-signed front
-		ServerName:         "cdn.example.com",
+		InsecureSkipVerify: true, // self-signed front; Kelp auth is the real check
+		ServerName:         c.sni,
 		NextProtos:         []string{"http/1.1"},
 	})
 	if err != nil {

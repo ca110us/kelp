@@ -38,6 +38,12 @@ func GenerateKeypair() (priv, pub []byte, err error) {
 	return priv, pub, err
 }
 
+// PubFromPriv derives the X25519 public key for a private key (used to restore
+// a persisted server keypair).
+func PubFromPriv(priv []byte) ([]byte, error) {
+	return curve25519.X25519(priv, curve25519.Basepoint)
+}
+
 func hkdfKey(secret, salt []byte, info string, n int) []byte {
 	r := hkdf.New(sha256.New, secret, salt, []byte(info))
 	out := make([]byte, n)

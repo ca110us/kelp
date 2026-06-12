@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ca110us/kelp/internal/core"
@@ -28,12 +29,16 @@ import (
 )
 
 func main() {
-	addr := flag.String("listen", "127.0.0.1:8443", "TLS listen address")
-	pskStr := flag.String("psk", "dev", "shared PSK passphrase (MVP)")
-	pubFile := flag.String("pubfile", "/tmp/kelp_server.pub", "where to write the server static pubkey")
+	addr := flag.String("listen", "0.0.0.0:443", "TLS listen address")
+	pskStr := flag.String("psk", "", "shared secret (required); use a long random string")
+	keyFile := flag.String("key", "kelp_server.key", "file to persist the server static keypair")
+	sni := flag.String("sni", "cdn.example.com", "TLS cert CN / SNI to present")
 	decoy := flag.String("decoy", "https://example.com", "decoy origin for non-Kelp traffic")
 	modelFile := flag.String("model", "", "measured shaping model JSON (optional)")
 	flag.Parse()
+	if *pskStr == "" {
+		log.Fatalf("-psk is required (a long random shared secret)")
+	}
 	if *modelFile != "" {
 		m, err := core.LoadModel(*modelFile)
 		if err != nil {
@@ -48,18 +53,15 @@ func main() {
 		log.Fatalf("decoy url: %v", err)
 	}
 
-	priv, pub, err := core.GenerateKeypair()
+	priv, pub, err := loadOrCreateKey(*keyFile)
 	if err != nil {
-		log.Fatalf("keygen: %v", err)
+		log.Fatalf("key: %v", err)
 	}
 	pubB64 := base64.StdEncoding.EncodeToString(pub)
-	if err := os.WriteFile(*pubFile, []byte(pubB64), 0o644); err != nil {
-		log.Fatalf("write pubfile: %v", err)
-	}
 	psk := core.PSKFromString(*pskStr)
 	replay := core.NewReplayCache()
 
-	cert, err := selfSignedCert()
+	cert, err := selfSignedCert(*sni)
 	if err != nil {
 		log.Fatalf("cert: %v", err)
 	}
@@ -74,6 +76,8 @@ func main() {
 	}
 	log.Printf("kelp-server listening on %s", *addr)
 	log.Printf("server static pubkey: %s", pubB64)
+	log.Printf("client: kelp-client -server <this-host>:%s -psk <same-psk> -pubkey %s -sni %s",
+		portOf(*addr), pubB64, *sni)
 
 	s := &server{psk: psk, priv: priv, replay: replay, decoy: decoyURL, tlsCfg: tlsCfg}
 	for {
@@ -187,15 +191,41 @@ func (c *prefixConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
-func selfSignedCert() (tls.Certificate, error) {
+// loadOrCreateKey persists the server's X25519 static keypair so the public key
+// (which clients pin) stays stable across restarts.
+func loadOrCreateKey(path string) (priv, pub []byte, err error) {
+	if data, e := os.ReadFile(path); e == nil {
+		if p, e2 := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data))); e2 == nil && len(p) == 32 {
+			pub, err = core.PubFromPriv(p)
+			return p, pub, err
+		}
+	}
+	priv, pub, err = core.GenerateKeypair()
+	if err != nil {
+		return nil, nil, err
+	}
+	if e := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(priv)), 0o600); e != nil {
+		return nil, nil, e
+	}
+	return priv, pub, nil
+}
+
+func portOf(addr string) string {
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		return p
+	}
+	return addr
+}
+
+func selfSignedCert(cn string) (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
 	tmpl := x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "cdn.example.com"},
-		DNSNames:     []string{"cdn.example.com"},
+		Subject:      pkix.Name{CommonName: cn},
+		DNSNames:     []string{cn},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

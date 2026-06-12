@@ -55,25 +55,31 @@ cmd/muxtest/        isolated mux concurrency test (manual)
 go build ./...
 ```
 
-## Run
+## Run (quick local test)
 
 ```sh
-# 1. measure a real CDN to produce a shaping model (optional but recommended)
-go run ./cmd/kelp-measure -host speed.cloudflare.com:443 \
-    -path "/__down?bytes=1048576" -out model.json
+# server (persists its keypair; prints its pubkey + a ready client command)
+go run ./cmd/kelp-server -listen 127.0.0.1:8443 -psk 'a-strong-secret' -key /tmp/k.key
 
-# 2. server (writes its static pubkey to /tmp/kelp_server.pub)
-go run ./cmd/kelp-server -psk dev -model model.json -decoy https://example.com
+# client (copy -pubkey from the server log)
+go run ./cmd/kelp-client -server 127.0.0.1:8443 -psk 'a-strong-secret' -pubkey '<PUBKEY>'
 
-# 3. client (reads the server pubkey, exposes a SOCKS5 proxy on :1080)
-go run ./cmd/kelp-client -psk dev -model model.json
-
-# 4. use it
 curl --socks5-hostname 127.0.0.1:1080 https://api.ipify.org
 ```
 
 A direct browser/probe to the server (no Kelp) is reverse-proxied to the decoy
 origin and sees a normal website.
+
+## Deploy for real use
+
+See [`DEPLOY.md`](./DEPLOY.md) — run the server on a VPS (port 443, systemd),
+connect from your machine, and use the local SOCKS5 proxy. Prebuilt Linux/macOS
+binaries can be produced with:
+
+```sh
+CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -ldflags="-s -w" -o kelp-server-linux-amd64 ./cmd/kelp-server
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o kelp-client-mac        ./cmd/kelp-client
+```
 
 ## Status / non-goals
 
