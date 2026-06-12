@@ -1,0 +1,11 @@
+# Built binaries
+/kelp-server
+/kelp-client
+/kelp-measure
+
+# Measured models and local state
+*.model.json
+model.json
+
+# macOS
+.DS_Store
