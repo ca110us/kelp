@@ -15,7 +15,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/ca110us/kelp/internal/core"
+	"github.com/ca110us/kelp/core"
 )
 
 func main() {

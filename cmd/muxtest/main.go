@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ca110us/kelp/internal/mux"
+	"github.com/ca110us/kelp/mux"
 )
 
 func main() {

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ca110us/kelp/internal/core"
-	"github.com/ca110us/kelp/internal/mux"
+	"github.com/ca110us/kelp/core"
+	"github.com/ca110us/kelp/mux"
 )
 
 func main() {
